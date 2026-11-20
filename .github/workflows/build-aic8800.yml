@@ -1,0 +1,81 @@
+name: build-aic8800dc-x86_64
+
+# 目标：为 kwrt 25.12-SNAPSHOT / kernel 6.12.116 / x86_64 编译 AIC8800 USB Wi-Fi 驱动
+# 设备：UGREEN CM760 / AX300 (a69c:5722 光盘模式 -> a69c:88de WLAN 模式)
+# 产出：kmod-aic8800dc 的 .ipk + .ko + usbmode 数据文件
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+    paths:
+      - '.github/workflows/**'
+      - 'README.md'
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+
+    steps:
+      - name: 释放磁盘空间
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+                      /usr/local/share/boost "$AGENT_TOOLSDIRECTORY" || true
+          df -h /
+
+      - name: 下载 OpenWrt 25.12.0 x86/64 SDK (kernel 6.12.71)
+        run: |
+          BASE="https://downloads.openwrt.org/releases/25.12.0/targets/x86/64"
+          SDK=$(curl -s "$BASE/" | grep -o 'openwrt-sdk-25\.12\.0-x86-64[^"]*\.tar\.zst' | head -1)
+          echo "SDK 文件: $SDK"
+          curl -fLO "$BASE/$SDK"
+          tar --zstd -xf "$SDK"
+          mv openwrt-sdk-* sdk
+          echo "--- SDK 内核版本 ---"
+          cat sdk/target/linux/x86/Makefile 2>/dev/null | grep -E "^KERNEL_(PATCHLEVEL|SUBLEVEL)" || true
+          ls sdk/build_dir/target-*/linux-x86_64/ 2>/dev/null | head -5
+
+      - name: 更新 feeds
+        working-directory: sdk
+        run: |
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
+
+      - name: 集成 AIC8800DC 驱动包
+        run: |
+          git clone --depth 1 https://github.com/kasonhaimen/openwrt-aic8800dc /tmp/aic
+          ls -R /tmp/aic | head -40
+          mkdir -p sdk/package/kernel
+          cp -a /tmp/aic/package/kernel/aic8800dc sdk/package/kernel/ 2>/dev/null || \
+            cp -a /tmp/aic/package/kernel/* sdk/package/kernel/
+          # 同步 usbmode 数据（a69c:5722 -> a69c:88de），运行时要装到路由器
+          mkdir -p out
+          cp -a /tmp/aic/package/utils/usbmode/data/* out/ 2>/dev/null || true
+          ls -l sdk/package/kernel/ out/ || true
+
+      - name: 编译
+        working-directory: sdk
+        run: |
+          make defconfig
+          make package/kernel/aic8800dc/compile V=s -j$(nproc) 2>&1 | tail -80
+
+      - name: 收集产物并检查 vermagic
+        run: |
+          mkdir -p artifact
+          find sdk/bin -name "*aic8800*.ipk" -exec cp -v {} artifact/ \; 2>/dev/null || true
+          find sdk/bin -name "*.ko" -exec cp -v {} artifact/ \; 2>/dev/null || true
+          cp -v out/* artifact/ 2>/dev/null || true
+          echo "=== 产物清单 ==="
+          ls -lh artifact/ || true
+          echo "=== 编译出的 vermagic（关键） ==="
+          for f in artifact/*.ko; do
+            [ -f "$f" ] || continue
+            echo "$f -> $(strings "$f" | grep -m1 '^vermagic=')"
+          done
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: aic8800dc-ipk
+          path: artifact/
+          if-no-files-found: warn
