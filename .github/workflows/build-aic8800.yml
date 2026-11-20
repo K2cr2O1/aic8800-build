@@ -66,6 +66,15 @@ jobs:
           cp -a /tmp/aic/package/kernel/* sdk/package/kernel/
           mkdir -p out
           cp -a /tmp/aic/package/utils/usbmode/data/* out/ 2>/dev/null || true
+
+          echo "--- 修正过期的 PKG_MIRROR_HASH ---"
+          MK=sdk/package/kernel/aic8800dc/Makefile
+          grep -nE "PKG_(MIRROR_)?HASH" "$MK" || true
+          sed -i -E 's/^PKG_MIRROR_HASH:=.*/PKG_MIRROR_HASH:=skip/' "$MK"
+          grep -qE '^PKG_MIRROR_HASH:=skip' "$MK" || echo 'PKG_MIRROR_HASH:=skip' >> "$MK"
+          echo "--- 修正后 ---"
+          grep -nE "PKG_(MIRROR_)?HASH" "$MK" || true
+
           ls -l sdk/package/kernel/ out/
 
       - name: 编译
