@@ -23,15 +23,28 @@ jobs:
 
       - name: 下载 OpenWrt 25.12.0 x86/64 SDK (kernel 6.12.71)
         run: |
+          set -euo pipefail
           BASE="https://downloads.openwrt.org/releases/25.12.0/targets/x86/64"
-          SDK=$(curl -s "$BASE/" | grep -o 'openwrt-sdk-25\.12\.0-x86-64[^"]*\.tar\.zst' | head -1)
-          echo "SDK 文件: $SDK"
-          curl -fLO "$BASE/$SDK"
+          SDK="openwrt-sdk-25.12.0-x86-64_gcc-14.3.0_musl.Linux-x86_64.tar.zst"
+          echo "--- 站点连通性 ---"
+          curl -sI --max-time 30 "$BASE/" | head -5 || true
+          echo "--- 下载 $SDK ---"
+          code=$(curl -L --retry 3 --retry-delay 5 --connect-timeout 30 \
+                      -o "$SDK" -w "%{http_code}" "$BASE/$SDK" || echo "000")
+          echo "http_code=$code"
+          if [ "$code" != "200" ] || [ ! -s "$SDK" ]; then
+            echo "!! curl 未成功，回退 wget"
+            rm -f "$SDK"
+            wget -q --tries=3 --timeout=60 -O "$SDK" "$BASE/$SDK"
+          fi
+          ls -lh "$SDK"
+          echo "--- 解压 ---"
           tar --zstd -xf "$SDK"
           mv openwrt-sdk-* sdk
+          echo "--- SDK 目录 ---"
+          ls sdk | head -20
           echo "--- SDK 内核版本 ---"
-          cat sdk/target/linux/x86/Makefile 2>/dev/null | grep -E "^KERNEL_(PATCHLEVEL|SUBLEVEL)" || true
-          ls sdk/build_dir/target-*/linux-x86_64/ 2>/dev/null | head -5
+          ls sdk/build_dir/target-*/linux-x86_64/ 2>/dev/null | head -5 || true
 
       - name: 更新 feeds
         working-directory: sdk
@@ -54,8 +67,9 @@ jobs:
       - name: 编译
         working-directory: sdk
         run: |
+          set -uo pipefail
           make defconfig
-          make package/kernel/aic8800dc/compile V=s -j$(nproc) 2>&1 | tail -80
+          make package/kernel/aic8800dc/compile V=s -j"$(nproc)" 2>&1 | tee /tmp/build.log | tail -60
 
       - name: 收集产物并检查 vermagic
         run: |
