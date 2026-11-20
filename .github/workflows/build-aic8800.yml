@@ -109,7 +109,57 @@ jobs:
         run: |
           exec > >(tee -a /tmp/diag.log) 2>&1
           set -uo pipefail
+
+          # 提前把源码解出来，给 6.12 的 cfg80211 API 变更打补丁
           make defconfig
+          make package/kernel/aic8800dc/download V=s || true
+          SRC=$(find build_dir -maxdepth 4 -type d -name "aic8800dc-*" | head -1)
+          echo "SRC=$SRC"
+          if [ -n "$SRC" ]; then
+            RX="$SRC/drivers/aic8800/aic8800_fdrv/rwnx_rx.c"
+            echo "--- 原始调用点 ---"
+            grep -n "cfg80211_rx_spurious_frame\|cfg80211_rx_unexpected_4addr_frame" "$RX" || true
+            sed -n '2040,2050p;2130,2145p' "$RX" || true
+
+            python3 - "$RX" <<'PY'
+import re, sys
+p = sys.argv[1]
+s = open(p, encoding='utf-8', errors='surrogateescape').read()
+
+# 6.12: cfg80211_rx_spurious_frame(dev, addr, gfp)
+#       cfg80211_rx_unexpected_4addr_frame(dev, addr, gfp)
+# 旧代码只传 2 个参数，第三个漏了。用正则把调用补上 gfp 实参。
+def fix(name, s):
+    # 匹配 name( ... ) 内含两个逗号分隔参数、且结尾不是 gfp 的情况
+    pat = re.compile(r'(%s\s*\(\s*[^;]*?)\)(\s*;)' % re.escape(name), re.S)
+    def repl(m):
+        body, tail = m.group(1), m.group(2)
+        # 统计顶层逗号个数（忽略括号内嵌套）
+        depth, commas = 0, 0
+        for ch in body[body.find('(')+1:]:
+            if ch in '([': depth += 1
+            elif ch in ')]': depth -= 1
+            elif ch == ',' and depth == 0: commas += 1
+        if commas >= 2:
+            return m.group(0)          # 已经是 3 参，不动
+        return body + ', GFP_ATOMIC)' + tail
+    return pat.subn(repl, s)
+
+total = 0
+for fn in ('cfg80211_rx_spurious_frame', 'cfg80211_rx_unexpected_4addr_frame'):
+    s, n = fix(fn, s)
+    print('patched %s: %d 处' % (fn, n))
+    total += n
+open(p, 'w', encoding='utf-8', errors='surrogateescape').write(s)
+print('TOTAL', total)
+PY
+
+            echo "--- 打补丁后 ---"
+            grep -n -A2 "cfg80211_rx_spurious_frame\|cfg80211_rx_unexpected_4addr_frame" "$RX" || true
+          else
+            echo "!! 找不到源码目录"
+          fi
+
           make package/kernel/aic8800dc/compile V=s -j"$(nproc)" 2>&1 | tail -60
 
       - name: 收集产物并检查 vermagic
