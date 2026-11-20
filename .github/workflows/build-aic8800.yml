@@ -52,19 +52,24 @@ jobs:
           ./scripts/feeds update -a
           ./scripts/feeds install -a
 
-      - name: 集成 AIC8800DC 驱动包
+      - name: 集成 AIC8800 驱动包（nickbash11 fork，已适配新内核）
         run: |
           exec > >(tee -a /tmp/diag.log) 2>&1
           set -euxo pipefail
-          git clone --depth 1 https://github.com/kasonhaimen/openwrt-aic8800dc /tmp/aic
-          mkdir -p sdk/package/kernel out
-          cp -a /tmp/aic/package/kernel/* sdk/package/kernel/
-          cp -a /tmp/aic/package/utils/usbmode/data/* out/ 2>/dev/null || true
+          git clone --depth 1 https://github.com/nickbash11/aic8800-usb_openwrt /tmp/aic
+          echo "--- 仓库结构 ---"
+          find /tmp/aic -maxdepth 2 -type f | head -20
 
-          MK=sdk/package/kernel/aic8800dc/Makefile
-          echo "--- PKG_MIRROR_HASH 改 skip ---"
-          sed -i -E 's/^PKG_MIRROR_HASH:=.*/PKG_MIRROR_HASH:=skip/' "$MK"
-          grep -qE '^PKG_MIRROR_HASH:=skip' "$MK" || echo 'PKG_MIRROR_HASH:=skip' >> "$MK"
+          mkdir -p sdk/package/kernel/aic8800-usb out
+          cp -a /tmp/aic/Makefile sdk/package/kernel/aic8800-usb/
+          cp -a /tmp/aic/patches sdk/package/kernel/aic8800-usb/ 2>/dev/null || true
+
+          MK=sdk/package/kernel/aic8800-usb/Makefile
+          echo "--- 原 Makefile 关键行 ---"
+          grep -nE "PKG_NAME|PKG_SOURCE_URL|PKG_SOURCE_VERSION|PKG_MIRROR_HASH|Build/Compile" "$MK"
+
+          # 保留 patches 目录（OpenWrt 会自动应用）
+          ls -l sdk/package/kernel/aic8800-usb/patches/ 2>/dev/null || echo "无 patches"
 
           echo "--- 关闭内核 CONFIG_WERROR ---"
           KCFG=sdk/target/linux/x86/config-6.12
@@ -73,43 +78,16 @@ jobs:
             echo '# CONFIG_WERROR is not set' >> "$KCFG"
           fi
 
-          echo "--- 加 -Wno-error=missing-prototypes ---"
-          sed -i 's/^\([[:space:]]*\)CONFIG_PLATFORM_UBUNTU=n \\/\1CONFIG_PLATFORM_UBUNTU=n \\\n\1KCFLAGS="-Wno-error=missing-prototypes" \\/' "$MK"
-          grep -n "Wno-error\|CONFIG_PLATFORM" "$MK" || true
-
-          ls -l sdk/package/kernel/ out/
-
-      - name: 预取源码并打 6.12 API 补丁
-        working-directory: sdk
-        run: |
-          exec > >(tee -a /tmp/diag.log) 2>&1
-          set -uo pipefail
-          make defconfig
-          make package/kernel/aic8800dc/download V=s || true
-
-          SRC=$(find build_dir -maxdepth 5 -type d -name "aic8800dc-*" | head -1)
-          echo "SRC=$SRC"
-          if [ -z "$SRC" ]; then
-            echo "!! 未找到源码目录，跳过补丁"
-            exit 0
-          fi
-
-          RX="$SRC/drivers/aic8800/aic8800_fdrv/rwnx_rx.c"
-          echo "--- 打补丁前 ---"
-          grep -n "cfg80211_rx_spurious_frame\|cfg80211_rx_unexpected_4addr_frame" "$RX" || true
-
-          cp "$GITHUB_WORKSPACE/scripts/patch_cfg80211.py" /tmp/patch_cfg80211.py
-          python3 /tmp/patch_cfg80211.py "$RX"
-
-          echo "--- 打补丁后 ---"
-          grep -n -A2 "cfg80211_rx_spurious_frame\|cfg80211_rx_unexpected_4addr_frame" "$RX" || true
+          ls -l sdk/package/kernel/aic8800-usb/
 
       - name: 编译
         working-directory: sdk
         run: |
           exec > >(tee -a /tmp/diag.log) 2>&1
           set -uo pipefail
-          make package/kernel/aic8800dc/compile V=s -j"$(nproc)" 2>&1 | tail -60
+          make defconfig
+          # 包名是 kmod-aic8800-usb-shenmintao，路径是 kernel/aic8800-usb
+          make package/kernel/aic8800-usb/compile V=s -j"$(nproc)" 2>&1 | tail -80
 
       - name: 收集产物并检查 vermagic
         if: always()
