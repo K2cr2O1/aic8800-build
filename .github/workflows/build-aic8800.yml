@@ -75,6 +75,33 @@ jobs:
           echo "--- 修正后 ---"
           grep -nE "PKG_(MIRROR_)?HASH" "$MK" || true
 
+          echo "--- 关闭内核 CONFIG_WERROR ---"
+          KCFG=sdk/target/linux/x86/config-6.12
+          if [ -f "$KCFG" ]; then
+            grep -v '^CONFIG_WERROR' "$KCFG" > "$KCFG.tmp" && mv "$KCFG.tmp" "$KCFG"
+            echo '# CONFIG_WERROR is not set' >> "$KCFG"
+            tail -2 "$KCFG"
+          else
+            echo "!! 未找到 $KCFG"
+          fi
+
+          echo "--- 给驱动编译加 -Wno-error=missing-prototypes ---"
+          python3 - "$MK" <<'PY'
+          import sys
+          p = sys.argv[1]
+          s = open(p, encoding='utf-8').read()
+          if 'Wno-error=missing-prototypes' not in s:
+              old = 'CONFIG_PLATFORM_UBUNTU=n \\'
+              new = ('CONFIG_PLATFORM_UBUNTU=n \\\n'
+                     '\t\tKCFLAGS="-Wno-error=missing-prototypes" \\\n'
+                     '\t\tEXTRA_CFLAGS="-Wno-error=missing-prototypes" \\')
+              assert old in s, 'anchor not found'
+              s = s.replace(old, new, 1)
+              open(p, 'w', encoding='utf-8').write(s)
+          i = s.find('define Build/Compile')
+          print(s[i:i+520])
+          PY
+
           ls -l sdk/package/kernel/ out/
 
       - name: 编译
